@@ -32,6 +32,7 @@
       const [items, setItems] = useState([]);
       const [isLoading, setIsLoading] = useState(false);
       const [isSyncing, setIsSyncing] = useState(false);
+      const [errorMessage, setErrorMessage] = useState(''); // 新增錯誤訊息狀態
       
       const [lists, setLists] = useState(['我的清單', '妹妹的清單']);
       const [currentList, setCurrentList] = useState('我的清單');
@@ -39,12 +40,14 @@
       
       const [regionFilter, setRegionFilter] = useState('');
       const [storeFilter, setStoreFilter] = useState('');
+      const [categoryFilter, setCategoryFilter] = useState(''); // 新增：分類篩選狀態
       const [isAddModalOpen, setIsAddModalOpen] = useState(false);
       const [isPurchaseModalOpen, setIsPurchaseModalOpen] = useState(false);
       const [isSettingsOpen, setIsSettingsOpen] = useState(false);
       const [selectedItem, setSelectedItem] = useState(null);
 
-      const [formData, setFormData] = useState({ url: '', name: '', image: '', twdPrice: '', region: '', store: '', note: '' });
+      // 新增：在 formData 中加入 category
+      const [formData, setFormData] = useState({ url: '', name: '', image: '', twdPrice: '', region: '', store: '', category: '', note: '' });
       const [isParsingUrl, setIsParsingUrl] = useState(false);
       const [isUploading, setIsUploading] = useState(false);
 
@@ -53,18 +56,43 @@
         if (!GAS_WEB_APP_URL) return;
         const fetchData = async () => {
           setIsLoading(true);
+          setErrorMessage('');
           try {
-            const res = await fetch(GAS_WEB_APP_URL);
-            const result = await res.json();
-            if (result.status === 'success' && result.data) {
-              setItems(result.data);
-              const dbLists = [...new Set(result.data.map(i => i.list).filter(Boolean))];
-              if (dbLists.length > 0) {
-                setLists(prev => [...new Set([...prev, ...dbLists])]);
+            // 加入 redirect: 'follow' 處理 GAS 的 302 重新導向
+            const res = await fetch(GAS_WEB_APP_URL, {
+              method: 'GET',
+              redirect: 'follow'
+            });
+            
+            if (!res.ok) throw new Error('網路回應錯誤，狀態碼：' + res.status);
+            
+            // 先取得純文字，避免因為權限錯誤回傳 HTML 登入頁面導致 JSON.parse 壞掉
+            const text = await res.text();
+            
+            try {
+              const result = JSON.parse(text);
+              if (result.status === 'success' && result.data) {
+                setItems(result.data);
+                const dbLists = [...new Set(result.data.map(i => i.list).filter(Boolean))];
+                if (dbLists.length > 0) {
+                  setLists(prev => [...new Set([...prev, ...dbLists])]);
+                }
+              } else if (result.status === 'error') {
+                throw new Error("資料庫回傳錯誤：" + result.message);
               }
+            } catch (parseError) {
+              console.error("解析錯誤內容:", text);
+              if (parseError.message.includes("資料庫回傳錯誤")) throw parseError;
+              throw new Error('資料解析失敗。請確認您的 Google Apps Script 部署權限是否已設為「所有人 (Anyone)」。');
             }
           } catch (error) {
             console.error("讀取資料失敗", error);
+            // 判斷是否為典型的跨域或網路阻擋錯誤
+            if (error.message === 'Failed to fetch' || error.name === 'TypeError') {
+              setErrorMessage('連線被阻擋 (Failed to fetch)。這通常是因為 Google Apps Script 部署時，存取權限沒有設定為「所有人 (Anyone)」。請回 Google 試算表重新發布。');
+            } else {
+              setErrorMessage(error.message);
+            }
           } finally {
             setIsLoading(false);
           }
@@ -88,6 +116,7 @@
           url: formData.url,
           region: formData.region,
           store: formData.store,
+          category: formData.category, // 新增：將分類加入新商品物件
           twdPrice: Number(formData.twdPrice),
           targetPrice: targetPrice,
           status: '待購',
@@ -97,18 +126,20 @@
 
         setItems(prev => [...prev, newItem]);
         setIsAddModalOpen(false);
-        setFormData({ url: '', name: '', image: '', twdPrice: '', region: '', store: '', note: '' });
-
+        // 新增：重置 category
+        setFormData({ url: '', name: '', image: '', twdPrice: '', region: '', store: '', category: '', note: '' });
+        
         if (GAS_WEB_APP_URL) {
           setIsSyncing(true);
           try {
             await fetch(GAS_WEB_APP_URL, {
               method: 'POST',
+              redirect: 'follow',
               headers: { 'Content-Type': 'text/plain;charset=utf-8' },
               body: JSON.stringify({ action: 'add', item: newItem })
             });
           } catch (error) {
-            alert("資料同步到雲端失敗");
+            alert("資料同步到雲端失敗，請檢查網路狀態或 API 權限設定。");
           } finally {
             setIsSyncing(false);
           }
@@ -127,11 +158,13 @@
           try {
             await fetch(GAS_WEB_APP_URL, {
               method: 'POST',
+              redirect: 'follow',
               headers: { 'Content-Type': 'text/plain;charset=utf-8' },
               body: JSON.stringify({ action: 'update_status', item: updatedItem })
             });
           } catch (error) {
             console.error("更新狀態失敗", error);
+            alert("狀態更新同步失敗");
           } finally {
             setIsSyncing(false);
           }
@@ -143,11 +176,16 @@
         setItems(items.map(i => i.id === item.id ? revertedItem : i));
         
         if (GAS_WEB_APP_URL) {
-          fetch(GAS_WEB_APP_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-            body: JSON.stringify({ action: 'update_status', item: revertedItem })
-          });
+          try {
+            await fetch(GAS_WEB_APP_URL, {
+              method: 'POST',
+              redirect: 'follow',
+              headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+              body: JSON.stringify({ action: 'update_status', item: revertedItem })
+            });
+          } catch (error) {
+            console.error("回復狀態失敗", error);
+          }
         }
       };
 
@@ -197,13 +235,16 @@
           if (item.list !== currentList) return false;
           if (regionFilter && item.region !== regionFilter) return false;
           if (storeFilter && item.store !== storeFilter) return false;
+          if (categoryFilter && item.category !== categoryFilter) return false; // 新增：分類篩選邏輯
           return true;
         });
-      }, [items, currentList, regionFilter, storeFilter]);
+      }, [items, currentList, regionFilter, storeFilter, categoryFilter]);
 
       const uniqueRegions = useMemo(() => [...new Set(items.filter(i => i.list === currentList).map(i => i.region).filter(Boolean))], [items, currentList]);
       const uniqueStores = useMemo(() => [...new Set(items.filter(i => i.list === currentList).map(i => i.store).filter(Boolean))], [items, currentList]);
-
+      // 新增：自動取得清單內出現過的所有不重複分類
+      const uniqueCategories = useMemo(() => [...new Set(items.filter(i => i.list === currentList).map(i => i.category).filter(Boolean))], [items, currentList]);
+      
       const stats = useMemo(() => {
         const purchased = filteredItems.filter(i => i.status === '已購');
         const totalForeign = purchased.reduce((sum, item) => sum + (Number(item.actualPrice) || 0), 0);
@@ -232,6 +273,14 @@
             </div>
           </header>
 
+          {/* 錯誤訊息提示區塊 */}
+          {errorMessage && (
+            <div className="bg-red-50 border-l-4 border-red-500 text-red-700 p-4 mx-4 mt-4 rounded shadow-sm text-sm">
+              <p className="font-bold mb-1"><i className="fas fa-exclamation-triangle"></i> 載入發生問題</p>
+              <p>{errorMessage}</p>
+            </div>
+          )}
+
           <div className="bg-blue-600 text-white px-4 py-3 mx-4 mt-4 rounded-2xl shadow-md flex justify-between items-center">
             <div>
               <p className="text-blue-100 text-sm">本次已花費</p>
@@ -244,13 +293,18 @@
           </div>
 
           <div className="px-4 mt-4 flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
-            <select value={regionFilter} onChange={(e) => setRegionFilter(e.target.value)} className="bg-white border border-gray-200 text-sm rounded-full px-4 py-1.5 shadow-sm text-gray-700 outline-none">
+            <select value={regionFilter} onChange={(e) => setRegionFilter(e.target.value)} className="bg-white border border-gray-200 text-sm rounded-full px-4 py-1.5 shadow-sm text-gray-700 outline-none shrink-0">
               <option value="">全部地區</option>
               {uniqueRegions.map(r => <option key={r} value={r}>{r}</option>)}
             </select>
-            <select value={storeFilter} onChange={(e) => setStoreFilter(e.target.value)} className="bg-white border border-gray-200 text-sm rounded-full px-4 py-1.5 shadow-sm text-gray-700 outline-none">
+            <select value={storeFilter} onChange={(e) => setStoreFilter(e.target.value)} className="bg-white border border-gray-200 text-sm rounded-full px-4 py-1.5 shadow-sm text-gray-700 outline-none shrink-0">
               <option value="">全部店家</option>
               {uniqueStores.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            {/* 新增：分類篩選下拉選單 */}
+            <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="bg-white border border-gray-200 text-sm rounded-full px-4 py-1.5 shadow-sm text-gray-700 outline-none shrink-0">
+              <option value="">全部分類</option>
+              {uniqueCategories.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
 
@@ -268,9 +322,11 @@
                           <span className="bg-white/90 text-gray-800 px-3 py-1 rounded-full text-xs font-bold tracking-widest">已購入</span>
                         </div>
                       )}
-                      <div className="absolute top-2 left-2 flex flex-col gap-1">
-                        {item.region && <span className="bg-black/50 text-white text-[10px] px-2 py-0.5 rounded backdrop-blur-sm">{item.region}</span>}
-                        {item.store && <span className="bg-blue-600/80 text-white text-[10px] px-2 py-0.5 rounded backdrop-blur-sm">{item.store}</span>}
+                      <div className="absolute top-2 left-2 flex flex-col gap-1 items-start">
+                        {item.region && <span className="bg-black/50 text-white text-[10px] px-2 py-0.5 rounded backdrop-blur-sm max-w-full truncate">{item.region}</span>}
+                        {item.store && <span className="bg-blue-600/80 text-white text-[10px] px-2 py-0.5 rounded backdrop-blur-sm max-w-full truncate">{item.store}</span>}
+                        {/* 新增：在商品卡片上顯示分類標籤 */}
+                        {item.category && <span className="bg-pink-600/80 text-white text-[10px] px-2 py-0.5 rounded backdrop-blur-sm max-w-full truncate">{item.category}</span>}
                       </div>
                     </div>
                     
@@ -365,6 +421,13 @@
                         <input type="text" className="w-full border p-2.5 rounded-xl bg-gray-50 outline-none" value={formData.store} onChange={e => setFormData({...formData, store: e.target.value})} />
                       </div>
                     </div>
+                    
+                    {/* 新增：分類輸入框 */}
+                    <div>
+                      <label className="text-sm font-bold text-gray-700 block mb-1">商品分類 (如: 食品, 美妝)</label>
+                      <input type="text" className="w-full border p-2.5 rounded-xl bg-gray-50 outline-none" value={formData.category} onChange={e => setFormData({...formData, category: e.target.value})} />
+                    </div>
+
                   </div>
                 </div>
 
