@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>跨平台購物小幫手</title>
+  <!-- 載入 Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- 載入 FontAwesome 圖示 -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <!-- 載入 React 與 Babel -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    .scrollbar-hide::-webkit-scrollbar { display: none; }
+    .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+    body { background-color: #f9fafb; -webkit-tap-highlight-color: transparent; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo } = React;
+
+    // === 🛑 請在這裡填入您的 Google API 與 ImgBB 金鑰 🛑 ===
+    const GAS_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbwhGu0zI5-KLCJENRhT6sP4Il-j56yHl7PeS7JsVKr5HcGW49bnB30sko5V2myqOepH/exec'; // TODO: 貼上 Google Apps Script 部署網址
+    const IMGBB_API_KEY = '5b11736cacba64f51ea35fb7adc50e96'; // TODO: 貼上 ImgBB API 金鑰
+
+    const App = () => {
+      const [items, setItems] = useState([]);
+      const [isLoading, setIsLoading] = useState(false);
+      const [isSyncing, setIsSyncing] = useState(false);
+      
+      const [lists, setLists] = useState(['我的清單', '妹妹的清單']);
+      const [currentList, setCurrentList] = useState('我的清單');
+      const [exchangeRate, setExchangeRate] = useState(0.21);
+      
+      const [regionFilter, setRegionFilter] = useState('');
+      const [storeFilter, setStoreFilter] = useState('');
+      const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+      const [isPurchaseModalOpen, setIsPurchaseModalOpen] = useState(false);
+      const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+      const [selectedItem, setSelectedItem] = useState(null);
+
+      const [formData, setFormData] = useState({ url: '', name: '', image: '', twdPrice: '', region: '', store: '', note: '' });
+      const [isParsingUrl, setIsParsingUrl] = useState(false);
+      const [isUploading, setIsUploading] = useState(false);
+
+      // --- 1. 載入資料 ---
+      useEffect(() => {
+        if (!GAS_WEB_APP_URL) return;
+        const fetchData = async () => {
+          setIsLoading(true);
+          try {
+            const res = await fetch(GAS_WEB_APP_URL);
+            const result = await res.json();
+            if (result.status === 'success' && result.data) {
+              setItems(result.data);
+              const dbLists = [...new Set(result.data.map(i => i.list).filter(Boolean))];
+              if (dbLists.length > 0) {
+                setLists(prev => [...new Set([...prev, ...dbLists])]);
+              }
+            }
+          } catch (error) {
+            console.error("讀取資料失敗", error);
+          } finally {
+            setIsLoading(false);
+          }
+        };
+        fetchData();
+      }, []);
+
+      // --- 2. 儲存新商品 ---
+      const handleAddItem = async () => {
+        if (!formData.name || !formData.twdPrice) {
+          alert("請填寫商品名稱與台灣參考價格");
+          return;
+        }
+        
+        const targetPrice = Math.round(Number(formData.twdPrice) / exchangeRate);
+        const newItem = {
+          id: Date.now().toString(),
+          list: currentList,
+          name: formData.name,
+          image: formData.image || 'https://via.placeholder.com/400x400?text=No+Image',
+          url: formData.url,
+          region: formData.region,
+          store: formData.store,
+          twdPrice: Number(formData.twdPrice),
+          targetPrice: targetPrice,
+          status: '待購',
+          actualPrice: 0,
+          note: formData.note
+        };
+
+        setItems(prev => [...prev, newItem]);
+        setIsAddModalOpen(false);
+        setFormData({ url: '', name: '', image: '', twdPrice: '', region: '', store: '', note: '' });
+
+        if (GAS_WEB_APP_URL) {
+          setIsSyncing(true);
+          try {
+            await fetch(GAS_WEB_APP_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+              body: JSON.stringify({ action: 'add', item: newItem })
+            });
+          } catch (error) {
+            alert("資料同步到雲端失敗");
+          } finally {
+            setIsSyncing(false);
+          }
+        }
+      };
+
+      // --- 3. 更新購買狀態 ---
+      const handleConfirmPurchase = async (actualPrice) => {
+        const updatedItem = { ...selectedItem, status: '已購', actualPrice: Number(actualPrice) };
+        setItems(items.map(i => i.id === selectedItem.id ? updatedItem : i));
+        setIsPurchaseModalOpen(false);
+        setSelectedItem(null);
+
+        if (GAS_WEB_APP_URL) {
+          setIsSyncing(true);
+          try {
+            await fetch(GAS_WEB_APP_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+              body: JSON.stringify({ action: 'update_status', item: updatedItem })
+            });
+          } catch (error) {
+            console.error("更新狀態失敗", error);
+          } finally {
+            setIsSyncing(false);
+          }
+        }
+      };
+
+      const handleToggleRevert = async (item) => {
+        const revertedItem = { ...item, status: '待購', actualPrice: 0 };
+        setItems(items.map(i => i.id === item.id ? revertedItem : i));
+        
+        if (GAS_WEB_APP_URL) {
+          fetch(GAS_WEB_APP_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify({ action: 'update_status', item: revertedItem })
+          });
+        }
+      };
+
+      const handleParseUrl = async () => {
+        if (!formData.url) return;
+        setIsParsingUrl(true);
+        try {
+          const response = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(formData.url)}`);
+          const data = await response.json();
+          const doc = new DOMParser().parseFromString(data.contents, "text/html");
+          const title = doc.querySelector('title')?.innerText || '';
+          const image = doc.querySelector('meta[property="og:image"]')?.content || '';
+          setFormData(prev => ({ ...prev, name: prev.name || title, image: prev.image || image }));
+        } catch (error) {
+          alert("解析失敗，請手動輸入");
+        } finally {
+          setIsParsingUrl(false);
+        }
+      };
+
+      const handleFileUpload = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        if (!IMGBB_API_KEY) { alert('請先填寫 IMGBB API KEY'); return; }
+
+        setIsUploading(true);
+        const formDataUpload = new FormData();
+        formDataUpload.append('image', file);
+
+        try {
+          const response = await fetch(`https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`, { method: 'POST', body: formDataUpload });
+          const data = await response.json();
+          if (data.success) {
+            setFormData(prev => ({ ...prev, image: data.data.url }));
+          } else {
+            alert('上傳失敗：' + data.error.message);
+          }
+        } catch (error) {
+          alert('圖片上傳發生錯誤');
+        } finally {
+          setIsUploading(false);
+        }
+      };
+
+      const filteredItems = useMemo(() => {
+        return items.filter(item => {
+          if (item.list !== currentList) return false;
+          if (regionFilter && item.region !== regionFilter) return false;
+          if (storeFilter && item.store !== storeFilter) return false;
+          return true;
+        });
+      }, [items, currentList, regionFilter, storeFilter]);
+
+      const uniqueRegions = useMemo(() => [...new Set(items.filter(i => i.list === currentList).map(i => i.region).filter(Boolean))], [items, currentList]);
+      const uniqueStores = useMemo(() => [...new Set(items.filter(i => i.list === currentList).map(i => i.store).filter(Boolean))], [items, currentList]);
+
+      const stats = useMemo(() => {
+        const purchased = filteredItems.filter(i => i.status === '已購');
+        const totalForeign = purchased.reduce((sum, item) => sum + (Number(item.actualPrice) || 0), 0);
+        const totalTwd = Math.round(totalForeign * exchangeRate);
+        return { totalForeign, totalTwd };
+      }, [filteredItems, exchangeRate]);
+
+      return (
+        <div className="w-full max-w-md mx-auto min-h-screen bg-gray-50 flex flex-col font-sans relative shadow-2xl overflow-hidden">
+          
+          <header className="bg-white px-4 py-3 shadow-sm z-10 sticky top-0 flex items-center justify-between">
+            <div className="flex-1">
+              <select 
+                value={currentList} 
+                onChange={(e) => { setCurrentList(e.target.value); setRegionFilter(''); setStoreFilter(''); }}
+                className="text-xl font-bold bg-transparent border-none outline-none w-full text-gray-800"
+              >
+                {lists.map(l => <option key={l} value={l}>{l}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center gap-3">
+              {isSyncing && <i className="fas fa-spinner fa-spin text-gray-400"></i>}
+              <button onClick={() => setIsSettingsOpen(true)} className="p-2 bg-gray-100 rounded-full text-gray-600 hover:bg-gray-200">
+                <i className="fas fa-cog"></i>
+              </button>
+            </div>
+          </header>
+
+          <div className="bg-blue-600 text-white px-4 py-3 mx-4 mt-4 rounded-2xl shadow-md flex justify-between items-center">
+            <div>
+              <p className="text-blue-100 text-sm">本次已花費</p>
+              <p className="text-2xl font-black mt-1">¥{stats.totalForeign.toLocaleString()}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-blue-100 text-xs mt-2">約合台幣</p>
+              <p className="text-lg font-bold">NT$ {stats.totalTwd.toLocaleString()}</p>
+            </div>
+          </div>
+
+          <div className="px-4 mt-4 flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+            <select value={regionFilter} onChange={(e) => setRegionFilter(e.target.value)} className="bg-white border border-gray-200 text-sm rounded-full px-4 py-1.5 shadow-sm text-gray-700 outline-none">
+              <option value="">全部地區</option>
+              {uniqueRegions.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+            <select value={storeFilter} onChange={(e) => setStoreFilter(e.target.value)} className="bg-white border border-gray-200 text-sm rounded-full px-4 py-1.5 shadow-sm text-gray-700 outline-none">
+              <option value="">全部店家</option>
+              {uniqueStores.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-4 pt-2 pb-24">
+            {isLoading ? (
+               <div className="flex justify-center items-center h-32 text-gray-400 gap-2"><i className="fas fa-spinner fa-spin"></i> 讀取清單中...</div>
+            ) : (
+              <div className="columns-2 gap-3 space-y-3">
+                {filteredItems.map(item => (
+                  <div key={item.id} className={`break-inside-avoid bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-100 relative transition-all duration-300 ${item.status === '已購' ? 'opacity-70' : ''}`}>
+                    <div className="relative aspect-[4/5] bg-gray-100">
+                      <img src={item.image} alt={item.name} className="w-full h-full object-cover" />
+                      {item.status === '已購' && (
+                        <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                          <span className="bg-white/90 text-gray-800 px-3 py-1 rounded-full text-xs font-bold tracking-widest">已購入</span>
+                        </div>
+                      )}
+                      <div className="absolute top-2 left-2 flex flex-col gap-1">
+                        {item.region && <span className="bg-black/50 text-white text-[10px] px-2 py-0.5 rounded backdrop-blur-sm">{item.region}</span>}
+                        {item.store && <span className="bg-blue-600/80 text-white text-[10px] px-2 py-0.5 rounded backdrop-blur-sm">{item.store}</span>}
+                      </div>
+                    </div>
+                    
+                    <div className="p-3">
+                      <h3 className="font-bold text-sm text-gray-800 leading-tight mb-2 line-clamp-2">{item.name}</h3>
+                      {item.status === '待購' ? (
+                        <p className="text-red-500 font-bold text-sm bg-red-50 inline-block px-2 py-1 rounded">目標: ¥{item.targetPrice.toLocaleString()}</p>
+                      ) : (
+                        <p className="text-gray-600 font-medium text-sm">購入: ¥{item.actualPrice.toLocaleString()}</p>
+                      )}
+
+                      <button 
+                        onClick={() => item.status === '待購' ? setSelectedItem(item) || setIsPurchaseModalOpen(true) : handleToggleRevert(item)}
+                        className="absolute bottom-2 right-2 p-1.5 rounded-full bg-gray-50 shadow hover:bg-gray-200 text-xl"
+                      >
+                        {item.status === '待購' ? <i className="far fa-circle text-gray-300"></i> : <i className="fas fa-check-circle text-green-500"></i>}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {!isLoading && filteredItems.length === 0 && (
+               <div className="text-center mt-20 text-gray-400">
+                 <i className="fas fa-shopping-bag text-5xl mb-4 opacity-20"></i>
+                 <p>{GAS_WEB_APP_URL ? '目前沒有商品，點擊右下角新增吧！' : '請先在程式碼上方填入 GAS_WEB_APP_URL'}</p>
+               </div>
+            )}
+          </div>
+
+          <button onClick={() => setIsAddModalOpen(true)} className="absolute bottom-6 right-6 bg-blue-600 text-white w-14 h-14 rounded-full shadow-lg hover:bg-blue-700 hover:scale-105 active:scale-95 transition-all z-20 flex items-center justify-center">
+            <i className="fas fa-plus text-xl"></i>
+          </button>
+
+          {isAddModalOpen && (
+            <div className="absolute inset-0 bg-black/60 z-30 flex items-end justify-center sm:items-center">
+              <div className="bg-white w-full sm:w-[400px] h-[90vh] sm:h-auto sm:max-h-[90vh] sm:rounded-3xl rounded-t-3xl flex flex-col shadow-2xl animate-slide-up">
+                <div className="p-4 border-b flex justify-between items-center sticky top-0 bg-white rounded-t-3xl z-10">
+                  <h2 className="text-lg font-bold">新增購物清單</h2>
+                  <button onClick={() => setIsAddModalOpen(false)} className="p-2 bg-gray-100 rounded-full flex items-center justify-center w-8 h-8"><i className="fas fa-times"></i></button>
+                </div>
+                
+                <div className="p-5 overflow-y-auto flex-1 space-y-5">
+                  <div className="space-y-2">
+                    <label className="text-sm font-bold text-gray-700">商品網址 (自動抓取名稱與圖片)</label>
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <i className="fas fa-link absolute left-3 top-3.5 text-gray-400"></i>
+                        <input type="text" placeholder="貼上網址..." className="w-full pl-9 pr-3 py-2 border rounded-xl bg-gray-50 outline-none" value={formData.url} onChange={(e) => setFormData({...formData, url: e.target.value})} />
+                      </div>
+                      <button onClick={handleParseUrl} disabled={isParsingUrl || !formData.url} className="bg-gray-800 text-white px-4 py-2 rounded-xl text-sm font-bold disabled:opacity-50">
+                        {isParsingUrl ? '解析中' : '解析'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <label className="text-sm font-bold text-gray-700 block mb-1">商品名稱 *</label>
+                      <input type="text" className="w-full border p-2.5 rounded-xl bg-gray-50 outline-none" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+                    </div>
+                    <div>
+                      <label className="text-sm font-bold text-gray-700 block mb-1">圖片網址 (或手機相簿上傳)</label>
+                      <div className="flex gap-2">
+                        <input type="text" className="w-full border p-2.5 rounded-xl bg-gray-50 outline-none" placeholder="圖片 URL" value={formData.image} onChange={e => setFormData({...formData, image: e.target.value})} />
+                        <input type="file" accept="image/*" id="imageUpload" className="hidden" onChange={handleFileUpload} disabled={isUploading} />
+                        <label htmlFor="imageUpload" className={`bg-gray-100 border p-2.5 rounded-xl text-gray-600 shrink-0 cursor-pointer flex items-center justify-center ${isUploading ? 'opacity-50' : 'hover:bg-gray-200'}`}>
+                          {isUploading ? <span className="text-xs font-bold px-1 animate-pulse">上傳...</span> : <i className="fas fa-upload"></i>}
+                        </label>
+                      </div>
+                      {formData.image && <img src={formData.image} alt="Preview" className="h-24 object-contain mt-2 rounded-lg border shadow-sm" />}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="text-sm font-bold text-gray-700 block mb-1">台灣參考價 (TWD) *</label>
+                        <input type="number" className="w-full border p-2.5 rounded-xl bg-gray-50 outline-none text-red-600 font-bold" value={formData.twdPrice} onChange={e => setFormData({...formData, twdPrice: e.target.value})} />
+                      </div>
+                      <div>
+                        <label className="text-sm font-bold text-gray-700 block mb-1">目標外幣預估</label>
+                        <div className="w-full border p-2.5 rounded-xl bg-gray-100 text-gray-500 font-bold">{formData.twdPrice ? `¥ ${Math.round(Number(formData.twdPrice) / exchangeRate).toLocaleString()}` : '-'}</div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="text-sm font-bold text-gray-700 block mb-1">地區 (如: 東京)</label>
+                        <input type="text" className="w-full border p-2.5 rounded-xl bg-gray-50 outline-none" value={formData.region} onChange={e => setFormData({...formData, region: e.target.value})} />
+                      </div>
+                      <div>
+                        <label className="text-sm font-bold text-gray-700 block mb-1">店家 (如: 松本清)</label>
+                        <input type="text" className="w-full border p-2.5 rounded-xl bg-gray-50 outline-none" value={formData.store} onChange={e => setFormData({...formData, store: e.target.value})} />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-4 border-t bg-white sticky bottom-0 rounded-b-3xl">
+                  <button onClick={handleAddItem} className="w-full bg-blue-600 text-white font-bold py-3.5 rounded-xl shadow-lg hover:bg-blue-700 transition">
+                    儲存商品至清單
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {isPurchaseModalOpen && selectedItem && (
+            <div className="absolute inset-0 bg-black/60 z-40 flex items-center justify-center p-4">
+              <div className="bg-white w-full max-w-xs rounded-3xl p-6 shadow-2xl animate-fade-in text-center">
+                <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <i className="fas fa-shopping-bag text-2xl text-green-600"></i>
+                </div>
+                <h3 className="font-bold text-lg mb-1">{selectedItem.name}</h3>
+                <p className="text-sm text-gray-500 mb-6">目標價: ¥{selectedItem.targetPrice}</p>
+                
+                <label className="text-sm font-bold text-gray-700 block text-left mb-2">實際購入外幣價格</label>
+                <div className="relative mb-6">
+                  <span className="absolute left-4 top-3 font-bold text-gray-500">¥</span>
+                  <input type="number" id="actualPriceInput" defaultValue={selectedItem.targetPrice} className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 pl-8 pr-4 text-xl font-bold outline-none" autoFocus />
+                </div>
+
+                <div className="flex gap-3">
+                  <button onClick={() => setIsPurchaseModalOpen(false)} className="flex-1 py-3 bg-gray-100 text-gray-700 font-bold rounded-xl">取消</button>
+                  <button onClick={() => handleConfirmPurchase(document.getElementById('actualPriceInput').value)} className="flex-1 py-3 bg-green-500 text-white font-bold rounded-xl shadow-lg">確認購入</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {isSettingsOpen && (
+            <div className="absolute inset-0 bg-white z-50 flex flex-col animate-slide-up">
+              <div className="p-4 border-b flex justify-between items-center shadow-sm">
+                <h2 className="text-lg font-bold">全域設定</h2>
+                <button onClick={() => setIsSettingsOpen(false)} className="p-2 bg-gray-100 rounded-full flex items-center justify-center w-8 h-8"><i className="fas fa-times"></i></button>
+              </div>
+              <div className="p-6 space-y-8">
+                <div>
+                  <h3 className="font-bold text-gray-800 mb-3 flex items-center gap-2"><i className="fas fa-cog text-gray-500"></i> 匯率設定</h3>
+                  <p className="text-sm text-gray-500 mb-2">設定目前外幣對台幣的匯率 (例如日幣 0.21)</p>
+                  <input type="number" step="0.001" value={exchangeRate} onChange={(e) => setExchangeRate(Number(e.target.value))} className="w-full border p-3 rounded-xl bg-gray-50 font-bold text-lg outline-none" />
+                </div>
+                <div className="border-t pt-8">
+                   <h3 className="font-bold text-gray-800 mb-3">清單管理</h3>
+                   <div className="flex gap-2">
+                     <input type="text" id="newListInput" placeholder="輸入新清單名稱" className="flex-1 border p-3 rounded-xl bg-gray-50 outline-none" />
+                     <button onClick={() => { const v = document.getElementById('newListInput').value; if(v && !lists.includes(v)) { setLists([...lists, v]); document.getElementById('newListInput').value = ''; } }} className="bg-gray-800 text-white px-5 py-3 rounded-xl font-bold">新增</button>
+                   </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
