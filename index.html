@@ -27,6 +27,21 @@
     // === 🛑 只需要保留 GAS 網址即可，已棄用 IMGBB 🛑 ===
     const GAS_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbwhGu0zI5-KLCJENRhT6sP4Il-j56yHl7PeS7JsVKr5HcGW49bnB30sko5V2myqOepH/exec'; // TODO: 貼上最新版 Google Apps Script 部署網址
 
+    // 新增：Google Drive 圖片專用轉換器，解決圖片無法顯示的問題
+    const getDisplayImageUrl = (url) => {
+      if (!url) return 'https://via.placeholder.com/400x400?text=No+Image';
+      if (url.includes('drive.google.com/uc?id=')) {
+        try {
+          // 抓取檔案 ID 並轉換為不會被阻擋的 thumbnail 網址
+          const fileId = url.split('id=')[1].split('&')[0];
+          return `https://drive.google.com/thumbnail?id=${fileId}&sz=w1000`;
+        } catch (e) {
+          return url;
+        }
+      }
+      return url;
+    };
+
     const App = () => {
       const [items, setItems] = useState([]);
       const [isLoading, setIsLoading] = useState(false);
@@ -340,7 +355,8 @@
                 {filteredItems.map(item => (
                   <div key={item.id} className={`break-inside-avoid bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-100 relative transition-all duration-300 ${item.status === '已購' ? 'opacity-70' : ''}`}>
                     <div className="relative aspect-[4/5] bg-gray-100">
-                      <img src={item.image} alt={item.name} className="w-full h-full object-cover" />
+                      {/* 套用 getDisplayImageUrl 解決圖片無法顯示 */}
+                      <img src={getDisplayImageUrl(item.image)} alt={item.name} className="w-full h-full object-cover" />
                       {item.status === '已購' && (
                         <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
                           <span className="bg-white/90 text-gray-800 px-3 py-1 rounded-full text-xs font-bold tracking-widest">已購入</span>
@@ -435,7 +451,8 @@
                           {isUploading ? <span className="text-xs font-bold px-1 animate-pulse">上傳...</span> : <i className="fas fa-upload"></i>}
                         </label>
                       </div>
-                      {formData.image && <img src={formData.image} alt="Preview" className="h-24 object-contain mt-2 rounded-lg border shadow-sm" />}
+                      {/* 套用 getDisplayImageUrl 解決上傳後的預覽破圖 */}
+                      {formData.image && <img src={getDisplayImageUrl(formData.image)} alt="Preview" className="h-24 object-contain mt-2 rounded-lg border shadow-sm" />}
                     </div>
 
                     {/* 優化一：價格欄位排版 */}
