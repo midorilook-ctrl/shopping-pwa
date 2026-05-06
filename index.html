@@ -27,14 +27,14 @@
     // === 🛑 只需要保留 GAS 網址即可，已棄用 IMGBB 🛑 ===
     const GAS_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbwhGu0zI5-KLCJENRhT6sP4Il-j56yHl7PeS7JsVKr5HcGW49bnB30sko5V2myqOepH/exec'; // TODO: 貼上最新版 Google Apps Script 部署網址
 
-    // 新增：Google Drive 圖片專用轉換器，解決圖片無法顯示的問題
+    // 更新：改用 lh3.googleusercontent.com 繞過 iOS/Safari 的跨站追蹤阻擋
     const getDisplayImageUrl = (url) => {
       if (!url) return 'https://via.placeholder.com/400x400?text=No+Image';
       if (url.includes('drive.google.com/uc?id=')) {
         try {
-          // 抓取檔案 ID 並轉換為不會被阻擋的 thumbnail 網址
+          // 抓取檔案 ID 並轉換為 Google 全球靜態圖片伺服器網址
           const fileId = url.split('id=')[1].split('&')[0];
-          return `https://drive.google.com/thumbnail?id=${fileId}&sz=w1000`;
+          return `https://lh3.googleusercontent.com/d/${fileId}`;
         } catch (e) {
           return url;
         }
@@ -222,7 +222,7 @@
           const image = doc.querySelector('meta[property="og:image"]')?.content || '';
           setFormData(prev => ({ ...prev, name: prev.name || title, image: prev.image || image }));
         } catch (error) {
-          alert("解析失敗，請手動輸入");
+          alert("解析失敗，請手手輸入");
         } finally {
           setIsParsingUrl(false);
         }
